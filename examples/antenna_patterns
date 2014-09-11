@@ -1,0 +1,227 @@
+#!/usr/bin/env python
+"""
+Synopsis:
+
+    Use various libraries to calculate the antenna patterns for a set of gravitational-wave antennas. We call them "antennas" because they respond to gravitational-waves in a similar way that electromagnetic antennas respond to light waves. In both cases, their response is directional, so rotating an antenna around will produce a different signal depending on its orientation relative to the source. 
+    In the case of electromagnetic (dipole: https://en.wikipedia.org/wiki/Dipole_antenna) antennas, there is only the angle of the antenna (lengthwise) relative to the incoming waves (assumed to be planes transverse to a radial line with an origin at the source). There is an orientation in which the full wave is absorbed by the antenna, and an orientation (90 degrees rotated) which is "blind" to the wave.
+    In the case of gravitational-wave (quadrupole) antennas, there are two angles to take into account (because you have two antennas overlaid upon each other --- the orthogonal arms of the interferometer). Given this, the response is more complicated, and requires more than one angle. There is no one angle in which the antenna is completely "blind" to a gravitational wave, but some orientations are much better than others. This is because there are two components to a gravitational-wave (called polarizations) which both have different geometrical responses. Of course, we can't rotate gravitational-wave antennas, they are large instruments which are not mobile. However, the sources of gravitational-waves are astrophysical in origin, and so we actually move relative to them! This is because the earth is rotating around its own axis as well as the sun.
+
+    Two orientation angles (all relative to a interferometer fixed coordinate system where the x-y plane is fixed to the instrument arms and z points orthogonally "up"):
+    theta/declination/altitude: angle created from the ground to the source
+    phi/right ascension/azimuth: angle created from a given reference arm to the source.
+    
+    There is an additional angle (called psi, or the polarization angle) which defines the orientation of the polarization components relative to the instrument x-y plane. This is effectively how one would rotate the plane of the incoming gravitational-wave to line up maximally with the orientation of the interferometer. Since it tends to complicate things needlessly, we'll always consider this angle to be zero. In reality, it can and does have an effect on the geometrical response.
+
+    For short signals, we only have to consider the instantaneous orientation of the interferometer relative to the source in the sky -- the earth doesn't move fast enough to matter. For waves which don't turn on/shut off, both of the motions are important.
+
+    References:
+        Anderson and Creighton: 6.1.10 and A.1
+        Maggiore (2008): chapter 7.8 and Table 7.1
+
+    See also:
+        https://dcc.ligo.org/public/0106/T1300666/003/Whelan_geometry.pdf
+"""
+
+import sys
+
+import matplotlib
+matplotlib.use("agg")
+from matplotlib import pyplot
+from mpl_toolkits.basemap import Basemap
+import matplotlib.patheffects as PathEffects
+
+import numpy
+
+def ra_dec_from_loc(x, y, z):
+    r = numpy.sqrt(x**2+y**2+z**2)
+    th = numpy.arcsin(z/r)*180/numpy.pi
+    ph = numpy.arctan2(y, x)*180/numpy.pi
+    return ph, th
+
+def set_effect(text):
+    text.set_path_effects([
+        PathEffects.Stroke(linewidth=3, foreground="white"),
+        PathEffects.Normal()])
+
+try:
+    from pylal import antenna, inject
+except ImportError:
+    sys.exit("Pylal not present, please install")
+
+# Calculate the "optimal" antenna pattern --- directly overhead and aligned with
+# the instrument
+inst = ("H1", "L1", "V1", "T1", "G1")
+
+lat_net, lon_net = {}, {}
+for det, det_obj in inject.cached_detector_by_prefix.iteritems():
+    if det not in inst:
+        continue
+    lon_net[det], lat_net[det] = ra_dec_from_loc(*det_obj.location)
+    print "Instrument %s:\n\tLatitude: %f\n\tLongitude: %f" % \
+        (det, lat_net[det], lon_net[det])
+print ""
+
+# NOTE: We will use the Hanford instrument as our reference
+
+# Ingredients we'll need:
+# Global positioning satellite (GPS) time --- this is a standard reference for
+# time between widely separated objects. We use it because it gives us a
+# reference which includes all sorts of synchronization effects
+time = 999993615 # midnight UTC
+time += 1*3600 # one hour to account for DST
+# Declination -- declinations are defined relative to the earth's axis, so we'll
+# need to find the "declination" of the intstrument (Hanford) in order to get to a
+# local frame of reference
+decl = lat_net["H1"]
+# Right ascension -- this is relative to the prime meridian, so we'll need to
+# find the "right ascension" of the intstrument (Hanford). This is trickier,
+# because the Earth is rotating, and so the source is 'moving' across the sky
+# relative to the interferometer. The trick is to pick a time (above) such that
+# the right ascension of the source matches the longitude of the intstrument ---
+# that's the additional bit added to the time above
+# NOTE: West means negative
+right_asc = lon_net["H1"]
+
+# Inclination -- this is only important for a specific set of sources. We'll set
+# it here to be maximal. For the curious, this means that the source (in this case, a binary) is 'face on' as opposed to 'edge on'.
+incl = 0
+
+# Polarization -- recall that we are setting this so that the wave's x-y axes are aligned with the instrument's x-y axes.
+polar = 0
+
+# Note that there are actually four return values. I'm discarding the last two
+# since they aren't as relevant. The first two are the response (ranging between
+# 0 and 1) to each of the polarizations of the gravitational wave. We arrange
+# the two polarizations so that the 'plus' polarization is always the bigger
+# (and non-zero) one. They are called plus and cross because, plus is aligned
+# with the instrument's arms and the other is rotated by 45 degrees.
+# NOTE: I'm cheating a bit here. Ignoring the polarization angle means that I've
+# mixed both components together, so while the magnitude is optimal, either
+# polarization might not be,
+fp, fx, _, _ = antenna.response(time, right_asc, decl, incl, polar, "degree", "H1")
+print "Response for Hanford (Hanford: directly overhead, and optimally aligned):\n\tPlus: %1.3f\n\tCross: %1.3f\n\tBoth: %f" % (fp, fx, numpy.sqrt(fp**2 + fx**2))
+
+# Let's calculate this for Livingston -- note that optimal for Hanford is *not*
+# optimal for Livingston!
+fp, fx, _, _ = antenna.response(time, right_asc, decl, incl, polar, "degree", "L1")
+print "Response for Livingston (Hanford: directly overhead, and optimally aligned):\n\tPlus: %1.3f\n\tCross: %1.3f\n\tBoth: %f" % (fp, fx, numpy.sqrt(fp**2 + fx**2))
+
+sm = numpy.zeros((360, 360))
+sm_p = numpy.zeros((360, 360))
+sm_c = numpy.zeros((360, 360))
+theta = numpy.linspace(-90, 89, 360)
+phi = numpy.linspace(0, 359, 360)
+for t, th in enumerate(theta):
+    for p, ph in enumerate(phi):
+        fp, fx, _, _ = antenna.response(time, ph, th, 0, 0, "degree", "H1")
+        sm_p[p, t] = fp
+        sm_c[p, t] = fx
+
+pp, tt = numpy.meshgrid(phi, theta)
+sm = numpy.sqrt(sm_p**2+sm_c**2)
+
+ax_p = pyplot.subplot2grid((2, 2), (0, 0))
+m = Basemap(projection="moll", lon_0=0)
+m.pcolormesh(pp, tt, sm_p.T, latlon=True, antialiased=True, vmin=-1, vmax=1)
+m.colorbar()
+m.drawcoastlines()
+mp_ra, mp_dc = m(lon_net["H1"], lat_net["H1"])
+text = pyplot.text(mp_ra, mp_dc, "H", color='black')
+set_effect(text)
+mp_ra, mp_dc = m(lon_net["L1"], lat_net["L1"])
+text = pyplot.text(mp_ra, mp_dc, "L", color='black')
+set_effect(text)
+pyplot.title("Plus polarization $F_+$")
+
+ax_c = pyplot.subplot2grid((2, 2), (0, 1))
+m = Basemap(projection="moll", lon_0=0)
+m.pcolormesh(pp, tt, sm_c.T, latlon=True, antialiased=True, vmin=-1, vmax=1)
+m.colorbar()
+m.drawcoastlines()
+mp_ra, mp_dc = m(lon_net["H1"], lat_net["H1"])
+text = pyplot.text(mp_ra, mp_dc, "H", color='black')
+set_effect(text)
+mp_ra, mp_dc = m(lon_net["L1"], lat_net["L1"])
+text = pyplot.text(mp_ra, mp_dc, "L", color='black')
+set_effect(text)
+pyplot.title("Cross polarization $F_{\\times}$")
+
+ax_sq = pyplot.subplot2grid((2, 2), (1, 0), colspan=2)
+m = Basemap(projection="moll", lon_0=0)
+m.pcolormesh(pp, tt, sm.T, latlon=True, antialiased=True, vmin=0, vmax=1)
+m.colorbar()
+m.drawcoastlines()
+mp_ra, mp_dc = m(lon_net["H1"], lat_net["H1"])
+text = pyplot.text(mp_ra, mp_dc, "H", color='black')
+set_effect(text)
+mp_ra, mp_dc = m(lon_net["L1"], lat_net["L1"])
+text = pyplot.text(mp_ra, mp_dc, "L", color='black')
+set_effect(text)
+pyplot.title("$\sqrt{F_+^2 + F_{\\times}^2}$")
+
+pyplot.suptitle("Antenna Patterns for H1")
+pyplot.savefig("skymap.png")
+
+# As a quick example of what the polarization angle does, I'm going to rotate
+# the incoming wave by 45 degrees relative to the intstrument. What you should
+# notice is that while the overall response doesn't change, the cross and plus
+# response flip. This because the polarizations are 45 degrees rotated versions
+# of each other.
+
+polar = 45.
+fp, fx, _, _ = antenna.response(time, right_asc, decl, incl, polar, "degree", "H1")
+print "Response for Hanford (Hanford: directly overhead, optimally aligned, wave plane rotated 45 degrees):\n\tPlus: %1.3f\n\tCross: %1.3f\n\tBoth: %f" % (fp, fx, numpy.sqrt(fp**2 + fx**2))
+
+sm = numpy.zeros((360, 360))
+sm_p = numpy.zeros((360, 360))
+sm_c = numpy.zeros((360, 360))
+for t, th in enumerate(theta):
+    for p, ph in enumerate(phi):
+        fp, fx, _, _ = antenna.response(time, ph, th, 0, polar, "degree", "H1")
+        sm_p[p, t] = fp
+        sm_c[p, t] = fx
+
+sm = numpy.sqrt(sm_p**2+sm_c**2)
+
+pyplot.figure()
+ax_p = pyplot.subplot2grid((2, 2), (0, 0))
+m = Basemap(projection="moll", lon_0=0)
+m.pcolormesh(pp, tt, sm_p.T, latlon=True, antialiased=True, vmin=-1, vmax=1)
+m.colorbar()
+m.drawcoastlines()
+mp_ra, mp_dc = m(lon_net["H1"], lat_net["H1"])
+text = pyplot.text(mp_ra, mp_dc, "H", color='black')
+set_effect(text)
+mp_ra, mp_dc = m(lon_net["L1"], lat_net["L1"])
+text = pyplot.text(mp_ra, mp_dc, "L", color='black')
+set_effect(text)
+pyplot.title("Plus polarization $F_+$")
+
+ax_c = pyplot.subplot2grid((2, 2), (0, 1))
+m = Basemap(projection="moll", lon_0=0)
+m.pcolormesh(pp, tt, sm_c.T, latlon=True, antialiased=True, vmin=-1, vmax=1)
+m.colorbar()
+m.drawcoastlines()
+mp_ra, mp_dc = m(lon_net["H1"], lat_net["H1"])
+text = pyplot.text(mp_ra, mp_dc, "H", color='black')
+set_effect(text)
+mp_ra, mp_dc = m(lon_net["L1"], lat_net["L1"])
+text = pyplot.text(mp_ra, mp_dc, "L", color='black')
+set_effect(text)
+pyplot.title("Cross polarization $F_{\\times}$")
+
+ax_sq = pyplot.subplot2grid((2, 2), (1, 0), colspan=2)
+m = Basemap(projection="moll", lon_0=0)
+m.pcolormesh(pp, tt, sm.T, latlon=True, antialiased=True, vmin=0, vmax=1)
+m.colorbar()
+m.drawcoastlines()
+mp_ra, mp_dc = m(lon_net["H1"], lat_net["H1"])
+text = pyplot.text(mp_ra, mp_dc, "H", color='black')
+set_effect(text)
+mp_ra, mp_dc = m(lon_net["L1"], lat_net["L1"])
+text = pyplot.text(mp_ra, mp_dc, "L", color='black')
+set_effect(text)
+pyplot.title("$\sqrt{F_+^2 + F_{\\times}^2}$")
+
+pyplot.suptitle("Antenna Patterns for H1\npoln angle ($\psi=45^{\circ}$)")
+pyplot.savefig("skymap_45rot.png")
